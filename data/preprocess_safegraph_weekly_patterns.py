@@ -53,46 +53,40 @@ def NAICS2category(POI_data, cat_list):
     for cat in cat_list:
         print(cat, POI_data[POI_data['category']==cat].shape[0])
 
-    loc_name2cat = POI_data[['location_name', 'category']]
-    loc_name2cat.drop_duplicates(inplace=True)
-    return loc_name2cat
+    id2cat = POI_data[['safegraph_place_id', 'category']]
+    loc_name2cat = POI_data[['location_name', 'postal_code', 'category']]    # loc_name2cat exists one2many relations
+    return id2cat, loc_name2cat
 
 
-def process_SG_POI(loc_name2cat):
-    zip_name = ''
+def process_SG_POI(id2cat:pd.DataFrame, loc_name2cat:pd.DataFrame):     # zip files to .npz
+
     for file_dir in sorted(glob(os.path.join(poi_dir, '*.gz'))):
-        zip_date = file_dir.split('\\')[-1][:10]
-        if zip_date != zip_name:
-            if zip_name != '':
-                stats = np.array([total_record, na_record, valid_record, unknown_loc, unknown_cat])
-                np.savez_compressed(f'{poi_dir}POI-visit-week-{zip_name}.npz',
-                                    stats=stats,
-                                    visit=week_tensor)
-            else:
-                pass
-            print(time.ctime())
-            print('    Processing: ', zip_date)
-            zip_name = zip_date
-            # initialize a zero tensor
-            week_tensor = np.zeros((24 * 7, len(us_states), len(naics_categories)))
-            total_record = 0
-            na_record = 0
-            valid_record = 0
-            unknown_loc = 0
-            unknown_cat = 0
+        zip_file = file_dir.split('\\')[-1]
+        print(time.ctime())
+        print('    Processing: ', zip_file)
+        zip_date = zip_file[:10]
+
+        # initialize a zero tensor
+        week_tensor = np.zeros((24 * 7, len(us_states), len(naics_categories)))
+        total_record = 0
+        valid_record = 0
+        unknown_loc = 0
+        unknown_cat = 0
 
         # load zipped csv file
         zip_csv = pd.read_csv(file_dir, compression='gzip')
-        zip_csv_cat = pd.merge(zip_csv, loc_name2cat, left_on='location_name', right_on='location_name')
+        zip_csv_ = pd.merge(zip_csv, id2cat, on='safegraph_place_id', how='outer', indicator=True)
+        zip_csv_by_id = zip_csv_[zip_csv_['_merge'] == 'both']    # joined by place_id
+        zip_csv_left = zip_csv_[zip_csv_['_merge'] == 'left_only']
+        zip_csv_by_loc_name = pd.merge(zip_csv_left, loc_name2cat, on=['location_name', 'postal_code'], how='inner')      # join the left with [loc_name, zipcode]
+        zip_csv_valid = pd.concat([zip_csv_by_id, zip_csv_by_loc_name], ignore_index=True)
         print('Finished merging!')
-        zip_csv_cat_dropna = zip_csv_cat.dropna(subset=['category'])
-        print('#Before:', zip_csv.shape[0], '#After merging:', zip_csv_cat.shape[0], '#After dropping NA',
-              zip_csv_cat_dropna.shape[0])
+        print('#Before:', zip_csv.shape[0], '#After merging place_id:', zip_csv_by_id.shape[0], '#After merging loc_name', zip_csv_valid.shape[0])
         total_record += zip_csv.shape[0]
-        na_record += zip_csv_cat_dropna.shape[0]
+        valid_record += zip_csv_valid.shape[0]
 
-        for i in range(zip_csv_cat_dropna.shape[0]):  # loop through each row
-            item = zip_csv_cat_dropna.iloc[i]
+        for i in range(zip_csv_valid.shape[0]):  # loop through each row
+            item = zip_csv_valid.iloc[i]
 
             # location
             try:
@@ -122,8 +116,12 @@ def process_SG_POI(loc_name2cat):
 
             for t in range(24 * 7):
                 week_tensor[t, loc_id, cat_id] += TS[t]
-            valid_record += 1
 
+        # save each file
+        stats = np.array([total_record, valid_record, unknown_loc, unknown_cat])
+        np.savez_compressed(f'{poi_dir}POI-visit-week-{zip_date}.npz',
+                            stats=stats,
+                            visit=week_tensor)
     return
 
 
@@ -196,9 +194,9 @@ us_states = ['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'DC', 'FL', 'GA', '
 
 if __name__ == '__main__':
     # preprocess to weekly POI visits (.npz)
-    # POI_data = load_POI_location()
-    # loc_name2cat = NAICS2category(POI_data, naics_categories)
-    # process_SG_POI(loc_name2cat)
+    POI_data = load_POI_location()
+    id2cat, loc_name2cat = NAICS2category(POI_data, naics_categories)
+    process_SG_POI(id2cat, loc_name2cat)
 
     # get ST-tensor
     st_tensor = get_ST_tensor(poi_dir)
